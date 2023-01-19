@@ -1,1 +1,1 @@
-from .network import AspectModel
+from .network import AspectBasedModel

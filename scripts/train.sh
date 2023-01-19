@@ -1,32 +1,36 @@
 export lr=3e-5
-export coef=0.6
+export coef=0.5
 export seed=42
-echo "${lr}"
-export MODEL_DIR=Aspect-Model
-export MODEL_DIR=$MODEL_DIR"/"$lr"/"$coef"/"$seed
-echo "${MODEL_DIR}"
-python3 train.py --task ner \
-                  --model_type xlmr \
+export epochs=100
+export batch_size=16
+echo "Training model with: "
+echo "- Learning rate: ${lr}"
+echo "- Seed: ${seed}"
+echo "- Epochs: ${epochs}"
+echo "- Batch size: ${batch_size}"
+export MODEL_DIR=./trained_models
+export DATA_DIR=./data
+echo "- Save model to directory: ${MODEL_DIR}"
+echo "- Load data from directory: ${DATA_DIR}"
+
+python3 train.py --model_type phobert \
                   --model_dir $MODEL_DIR \
-                  --data_dir data/ \
-                  --train_type train \
-                  --val_type dev \
-                  --test_type test \
+                  --data_dir $DATA_DIR \
                   --seed $seed \
                   --do_train \
+				  --plot_result \
                   --eval_train \
                   --eval_dev \
                   --eval_test \
-                  --save_steps 69 \
-                  --logging_steps 69 \
-                  --num_train_epochs 500 \
-                  --tuning_metric competition_score \
-                  --gpu_id 0 \
-                  --aspect_loss_coef $coef \
+                  --epochs $epochs \
+                  --batch_size $batch_size \
+                  --aspect_coef $coef \
                   --threshold 0.5 \
                   --learning_rate $lr \
-                  --max_seq_len 256 \
-                  --train_batch_size 32 \
-                  --eval_batch_size 64 \
-                  --dropout_rate 0.4 \
-                  --early_stopping 15 \
+                  --max_seq_len 96 \
+				  --embed_dim 256 \
+				  --hidden_dim 256 \
+				  --num_layers 12 \
+				  --num_heads 4 \
+                  --dropout_rate 0.2 \
+                  --early_stopping 15

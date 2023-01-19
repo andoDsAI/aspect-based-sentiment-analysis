@@ -1,261 +1,124 @@
-import copy
-import json
 import logging
 import os
-import pickle
 
 import numpy as np
 import pandas as pd
-import torch
-from torch.utils.data import TensorDataset
+from fairseq.data import Dictionary
+from fairseq.data.encoders.fastbpe import fastBPE
+from gensim.models import Word2Vec
+from tqdm import tqdm
 
 from src.utils import get_aspect_labels, get_polarity_labels
+from vncorenlp import VnCoreNLP
 
 logger = logging.getLogger(__name__)
 
 
-class InputExample(object):
-    """
-    A single training/test example for simple sequence classification.
-    Args:
-        guid: Unique id for the example.
-        words: list. The words of the sequence.
-        aspect_label: (Optional) list. The aspect labels of the example.
-        polarity_label: (Optional) list. The polarity labels of the example.
-    """
-
-    def __init__(self, guid, words, aspect_label=None, polarity_label=None):
-        self.guid = guid
-        self.words = words
-        self.aspect_label = aspect_label
-        self.polarity_label = polarity_label
-
-    def __repr__(self):
-        return str(self.to_json_string())
-
-    def to_dict(self):
-        """Serializes this instance to a Python dictionary."""
-        output = copy.deepcopy(self.__dict__)
-        return output
-
-    def to_json_string(self):
-        """Serializes this instance to a JSON string."""
-        return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
+class BPE:
+    bpe_codes = "PhoBERT_base_transformers/bpe.codes"
 
 
-class InputFeatures(object):
-    """A single set of features of data."""
+args = BPE()
+bpe = fastBPE(args)
+vocab = Dictionary()
+vocab.add_from_file("PhoBERT_base_transformers/dict.txt")
+rdrsegmenter_path = "vncorenlp/VnCoreNLP-1.1.1.jar"
 
-    def __init__(
-        self, input_ids, attention_mask, token_type_ids, aspect_label_ids, polarity_label_ids
+
+def load_data(args, data_type: str = "train"):
+    aspects_label = get_aspect_labels(args)
+    polarities_label = get_polarity_labels(args)
+    num_aspect = len(aspects_label)
+    num_sentiment = len(polarities_label)
+    df = pd.read_csv(os.path.join(args.data_dir, data_type + ".csv"))
+
+    texts = []
+    aspects = []
+    polarities = []
+    for _, row in tqdm(df.iterrows(), desc=f"Loading {data_type} data...", total=len(df)):
+        texts.append(row["text"])
+        aspects.append(np.zeros(num_aspect))
+        polarities.append(np.zeros(num_aspect * num_sentiment))
+        for key in aspects_label.keys():
+            if row[key] != 0:
+                aspects[-1][aspects_label[key]] = 1
+                polarities[-1][aspects_label[key] * num_sentiment + row[key] - 1] = 1
+
+    aspects = np.array(aspects)
+    polarities = np.array(polarities)
+    return texts, aspects, polarities
+
+
+def convert_lines_to_features(args, lines):
+    rdrsegmenter = VnCoreNLP(rdrsegmenter_path, annotators="wseg", max_heap_size="-Xmx500m")
+    max_seq_len = args.max_seq_len
+    # initialize the numpy arrays
+    outputs = np.zeros((len(lines), max_seq_len), dtype=np.int32)
+    attention_mask = np.ones((len(lines), max_seq_len), dtype=np.int32)
+    transformer_mask = np.ones((len(lines), max_seq_len, max_seq_len), dtype=np.int32)
+
+    pad_id = 1
+    eos_id = 2
+    corpus = []
+    for idx, row in tqdm(
+        enumerate(lines), total=len(lines), desc="Converting lines to features..."
     ):
-        self.input_ids = input_ids
-        self.attention_mask = attention_mask
-        self.token_type_ids = token_type_ids
-        self.aspect_label_ids = aspect_label_ids
-        self.polarity_label_ids = polarity_label_ids
-
-    def __repr__(self):
-        return str(self.to_json_string())
-
-    def to_dict(self):
-        """Serializes this instance to a Python dictionary."""
-        output = copy.deepcopy(self.__dict__)
-        return output
-
-    def to_json_string(self):
-        """Serializes this instance to a JSON string."""
-        return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
-
-
-class JointProcessor(object):
-    """Processor for the dataset"""
-
-    def __init__(self, args):
-        self.args = args
-        self.aspect_labels = get_aspect_labels(args)
-        self.polarity_labels = get_polarity_labels(args)
-
-    def _read_file(self, input_file):
-        """Reads a csv file."""
-        data = pd.read_csv(input_file)
-        reviews = list(data.Review)
-        polarities = zip(
-            list(data.giai_tri),
-            list(data.luu_tru),
-            list(data.nha_hang),
-            list(data.an_uong),
-            list(data.di_chuyen),
-            list(data.mua_sam),
+        row = " ".join([" ".join(sent) for sent in rdrsegmenter.tokenize(row)])
+        # byte pair encoding(bpe)
+        sub_words = "<s> " + bpe.encode(row) + " </s>"
+        corpus.append(sub_words.split())
+        input_ids = (
+            vocab.encode_line(sub_words, append_eos=False, add_if_not_exist=False).long().tolist()
         )
-        polarity_labels = [list(i) for i in polarities]
-        aspect_labels = [[] for _ in range(len(reviews))]
-        for i in range(len(reviews)):
-            for j in range(len(self.aspect_labels)):
-                if polarity_labels[i][j] != 0:
-                    aspect_labels[i].append(1)
-                else:
-                    aspect_labels[i].append(0)
-
-        polarity_labels = np.array(polarity_labels)
-        aspect_labels = np.array(aspect_labels)
-        return reviews, aspect_labels, polarity_labels
-
-    def _create_examples(self, reviews, aspect_labels, polarity_labels, set_type):
-        """Creates examples for the dataset."""
-        examples = []
-        for i, (review, aspect_label, polarity_label) in enumerate(
-            zip(reviews, aspect_labels, polarity_labels)
-        ):
-            guid = "%s-%s" % (set_type, i)
-            # input text
-            words = review.split()
-            examples.append(
-                InputExample(
-                    guid=guid,
-                    words=words,
-                    aspect_label=aspect_label,
-                    polarity_label=polarity_label,
-                )
-            )
-        return examples
-
-    def get_examples(self, mode):
-        """
-        Args:
-            mode: train, dev, test
-        """
-        data_path = os.path.join(self.args.data_dir, mode + ".csv")
-        logger.info("LOOKING AT {}".format(data_path))
-        reviews, aspect_labels, polarity_labels = self._read_file(data_path)
-        return self._create_examples(
-            reviews=reviews,
-            aspect_labels=aspect_labels,
-            polarity_labels=polarity_labels,
-            set_type=mode,
-        )
-
-
-def convert_examples_to_features(
-    examples,
-    max_seq_len,
-    tokenizer,
-    pad_token_label_id=-100,
-    cls_token_segment_id=0,
-    pad_token_segment_id=0,
-    sequence_a_segment_id=0,
-    mask_padding_with_zero=True,
-):
-    # Setting based on the current model type
-    cls_token = tokenizer.cls_token
-    sep_token = tokenizer.sep_token
-    unk_token = tokenizer.unk_token
-    pad_token_id = tokenizer.pad_token_id
-
-    features = []
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 5000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        # Tokenize
-        tokens = []
-        for word in example.words:
-            word_tokens = tokenizer.tokenize(word)
-            if not word_tokens:
-                word_tokens = [unk_token]  # For handling the bad-encoded word
-            tokens.extend(word_tokens)
-
-        # Account for [CLS] and [SEP]
-        special_tokens_count = 2
-        if len(tokens) > max_seq_len - special_tokens_count:
-            tokens = tokens[: (max_seq_len - special_tokens_count)]
-
-        # Add [SEP] token
-        tokens += [sep_token]
-        token_type_ids = [sequence_a_segment_id] * len(tokens)
-
-        # Add [CLS] token
-        tokens = [cls_token] + tokens
-        token_type_ids = [cls_token_segment_id] + token_type_ids
-
-        # Input ids
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real tokens are attended to.
-        attention_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        padding_length = max_seq_len - len(input_ids)
-        input_ids = input_ids + ([pad_token_id] * padding_length)
-        attention_mask = attention_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
-        token_type_ids = token_type_ids + ([pad_token_segment_id] * padding_length)
-
-        assert len(input_ids) == max_seq_len, "Error with input length {} vs {}".format(
-            len(input_ids), max_seq_len
-        )
-        assert (
-            len(attention_mask) == max_seq_len
-        ), "Error with attention mask length {} vs {}".format(len(attention_mask), max_seq_len)
-        assert len(token_type_ids) == max_seq_len, "Error with token type length {} vs {}".format(
-            len(token_type_ids), max_seq_len
-        )
-        features.append(
-            InputFeatures(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
-                aspect_label_ids=example.aspect_label,
-                polarity_label_ids=example.polarity_label,
-            )
-        )
-    return features
-
-
-def load_examples(args, tokenizer, mode):
-    processor = JointProcessor(args)
-
-    # Load data features from cache or dataset file
-    cached_features_file = os.path.join(
-        args.data_dir,
-        "cached_{}_{}_{}_{}".format(
-            mode,
-            args.token_level,
-            list(filter(None, args.model_name_or_path.split("/"))).pop(),
-            args.max_seq_len,
-        ),
-    )
-
-    if os.path.exists(cached_features_file):
-        logger.info("Loading features from cached file %s", cached_features_file)
-        features = torch.load(cached_features_file)
-    else:
-        # Load data features from dataset file
-        if mode in [
-            "train",
-            "train_dev",
-            "dev",
-            "test",
-            "private_test",
-            "public_test",
-        ]:
-            examples = processor.get_examples(mode)
+        # padding
+        if len(input_ids) > max_seq_len:
+            input_ids = input_ids[:max_seq_len]
+            input_ids[-1] = eos_id
         else:
-            raise Exception("For mode {}, Only train, dev, test is available".format(mode))
+            length_ = len(input_ids)
+            input_ids = input_ids + [pad_id] * (max_seq_len - len(input_ids))
+            mask = [0 if i == 1 else 1 for i in input_ids]
+            attention_mask[idx, :] = np.array(mask)
+            transformer_mask[idx, :, length_:] = 0
+            transformer_mask[idx, length_:, :] = 0
+        outputs[idx, :] = np.array(input_ids)
+    rdrsegmenter.close()
+    return outputs, attention_mask, transformer_mask, corpus
 
-        # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
-        pad_token_label_id = args.ignore_index
-        features = convert_examples_to_features(
-            examples, args.max_seq_len, tokenizer, pad_token_label_id=pad_token_label_id
-        )
-        logger.info("Saving features into cached file %s", cached_features_file)
-        torch.save(features, cached_features_file)
 
-    # Convert to Tensors and build dataset
-    dataset = TensorDataset(
-        torch.tensor([f.input_ids for f in features], dtype=torch.long),
-        torch.tensor([f.attention_mask for f in features], dtype=torch.long),
-        torch.tensor([f.token_type_ids for f in features], dtype=torch.long),
-        torch.tensor([f.aspect_label_ids for f in features], dtype=torch.float32),
-        torch.tensor([f.polarity_label_ids for f in features], dtype=torch.long),
+def load_samples(args, data_type):
+    # load data features from dataset file
+    if data_type in [
+        "train",
+        "dev",
+        "test",
+    ]:
+        lines, aspects, polarities = load_data(args, data_type)
+    else:
+        raise Exception("For mode {}, Only train, dev, test is available".format(data_type))
+    input_ids, attention_mask, transformer_mask, corpus = convert_lines_to_features(args, lines)
+    del lines
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "transformer_mask": transformer_mask,
+        "aspects": aspects,
+        "polarities": polarities,
+        "corpus": corpus,
+    }
+
+
+def get_embedding_matrix(args, corpus):
+    # word2vec model
+    word2vec = Word2Vec(
+        sentences=corpus, size=args.embed_dim, window=10, min_count=1, workers=5, sg=1
     )
-    return dataset
+    vocab_size = len(vocab)
+    embedding_matrix = np.zeros((vocab_size, args.embed_dim))
+    for word in word2vec.wv.vocab:
+        try:
+            i = vocab.indices[word]
+        except Exception:
+            i = vocab.indices["<unk>"]
+        embedding_matrix[i] = word2vec.wv[word]
+    return embedding_matrix

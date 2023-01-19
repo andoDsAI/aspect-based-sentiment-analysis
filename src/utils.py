@@ -1,39 +1,28 @@
+import json
 import logging
 import os
 import random
 
+import matplotlib.pyplot as plt
 import numpy as np
-import torch
-from transformers import (
-    AdamW,
-    AutoTokenizer,
-    RobertaConfig,
-    XLMRobertaConfig,
-    XLMRobertaTokenizer,
-    XLMRobertaTokenizerFast,
-    get_linear_schedule_with_warmup,
-)
+import tensorflow as tf
+from transformers import RobertaConfig
 
-from network import AspectModel
+from network import AspectBasedModel
 
 MODEL_CLASSES = {
-    "xlmr": (XLMRobertaConfig, AspectModel, XLMRobertaTokenizer),
-    "xlmr-fast": (XLMRobertaConfig, AspectModel, XLMRobertaTokenizerFast),
-    "phobert": (RobertaConfig, AspectModel, AutoTokenizer),
+    "phobert": (RobertaConfig, AspectBasedModel),
 }
 
 MODEL_PATH_MAP = {
-    "xlmr": "xlm-roberta-base",
-    "phobert": "vinai/phobert-base",
+    "phobert": "PhoBERT_base_transformers",
 }
 
 
 def seed_everything(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if not args.no_cuda and torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+    tf.random.set_seed(args.seed)
 
 
 def init_logger():
@@ -44,56 +33,49 @@ def init_logger():
     )
 
 
-def get_optimizer(model, args, t_total):
-    # Prepare optimizer and schedule (linear warmup and decay)
-    param_optimizer = list(model.named_parameters())
-    no_decay = ["bias", "LayerNorm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [
-                param for name, param in param_optimizer if not any(nd in name for nd in no_decay)
-            ],
-            "weight_decay": args.weight_decay,
-        },
-        {
-            "params": [
-                param for name, param in param_optimizer if any(nd in name for nd in no_decay)
-            ],
-            "weight_decay": 0.0,
-        },
-    ]
-    optimizer = AdamW(
-        optimizer_grouped_parameters,
-        lr=args.learning_rate,
-        eps=args.adam_epsilon,
-        weight_decay=args.weight_decay,
-    )
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer=optimizer, num_training_steps=t_total, num_warmup_steps=args.num_warmup_steps
-    )
-
-    return optimizer, scheduler
+def scheduler(epoch, lr):
+    return lr * 0.5 ** (epoch // 9)
 
 
 def get_aspect_labels(args):
     aspect_path = os.path.join(args.data_dir, args.aspect_label_file)
     with open(aspect_path, "r", encoding="utf-8") as f:
-        data = f.readlines()
+        aspects = json.loads(f.read())
         f.close()
 
-    aspect_list = [row.strip() for row in data]
-    return aspect_list
+    return aspects
 
 
 def get_polarity_labels(args):
     polarity_path = os.path.join(args.data_dir, args.polarity_label_file)
     with open(polarity_path, "r", encoding="utf-8") as f:
-        data = f.readlines()
+        polarities = json.loads(f.read())
         f.close()
-
-    polarity_list = [row.strip() for row in data]
-    return polarity_list
+    return polarities
 
 
-def load_tokenizer(args):
-    return MODEL_CLASSES[args.model_type][2].from_pretrained(args.model_name_or_path)
+def draw_history(history):
+    # aspect f1-score
+    plt.plot(history.history["aspect_f1_score"])
+    plt.plot(history.history["val_aspect_f1_score"])
+    plt.title("Model aspect f1-score")
+    plt.ylabel("f1-score")
+    plt.xlabel("epoch")
+    plt.legend(["train", "validation"], loc="upper left")
+    plt.show()
+    # polarity f1-score
+    plt.plot(history.history["polarity_f1_score"])
+    plt.plot(history.history["val_polarity_f1_score"])
+    plt.title("Model polarity f1-score")
+    plt.ylabel("f1-score")
+    plt.xlabel("epoch")
+    plt.legend(["train", "validation"], loc="upper left")
+    plt.show()
+    # loss
+    plt.plot(history.history["loss"])
+    plt.plot(history.history["val_loss"])
+    plt.title("Model loss")
+    plt.ylabel("loss")
+    plt.xlabel("epoch")
+    plt.legend(["train", "validation"], loc="upper left")
+    plt.show()

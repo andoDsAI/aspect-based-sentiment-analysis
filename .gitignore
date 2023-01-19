@@ -3,4 +3,5 @@
 *.log
 /pretrained-models
 /logs
-/data
+/vncorenlp
+/PhoBERT_base_transformers
