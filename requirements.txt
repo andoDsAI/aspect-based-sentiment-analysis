@@ -10,7 +10,7 @@ scipy==1.7.0
 spacy==2.3.5
 srsly==1.0.5
 tokenizers==0.12.1
-torch==1.9.0
+torch==1.13.1
 tqdm==4.62.2
 vncorenlp==1.0.3
 tensorboard==2.9.0
