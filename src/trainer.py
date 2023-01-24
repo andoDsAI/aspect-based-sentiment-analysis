@@ -51,21 +51,21 @@ class Trainer(object):
             callbacks.LearningRateScheduler(scheduler),
             callbacks.ModelCheckpoint(
                 os.path.join(self.args.model_dir),
-                monitor="val_aspect_f1_score",
+                monitor="val_loss",
                 verbose=1,
                 mode="max",
                 save_weights_only=True,
                 save_best_only=True,
             ),
             EarlyStop(
-                args=self.args,
+                num_aspects=self.num_aspects,
                 patience=self.args.early_stopping,
                 restore_best_weights=True,
                 mode="max",
             ),
         ]
         self.model.compile(
-            loss="binary_crossentropy",
+            loss="categorical_crossentropy",
             optimizer=optimizers.Adam(
                 lr=self.args.learning_rate,
                 epsilon=self.args.epsilon,
@@ -77,29 +77,20 @@ class Trainer(object):
                         num_classes=self.num_aspects,
                         threshold=self.args.threshold,
                         average="micro",
-                        name="f1_score",
                     )
-                ],
-                [
-                    tfa.metrics.F1Score(
-                        num_classes=self.num_aspects * self.num_polarities,
-                        threshold=self.args.threshold,
-                        average="micro",
-                        name="f1_score",
-                    )
-                ],
+                ] for _ in range(self.num_aspects)
             ],
         )
         
         history = self.model.fit(
             [self.train_dataset["input_ids"], self.train_dataset["attention_mask"], self.train_dataset["transformer_mask"]],
-            [self.train_dataset["aspects"], self.train_dataset["polarities"]],
+            [aspect for aspect in self.train_dataset["aspects"]],
             epochs=epochs,
             batch_size=batch_size,
             verbose=1,
             validation_data=(
                 [self.dev_dataset["input_ids"], self.dev_dataset["attention_mask"], self.dev_dataset["transformer_mask"]],
-                [self.dev_dataset["aspects"], self.dev_dataset["polarities"]],
+                [aspect for aspect in self.dev_dataset["aspects"]],
             ),
             callbacks=model_callbacks,
         )
@@ -120,7 +111,7 @@ class Trainer(object):
         logger.info("Num examples = %d", len(dataset["corpus"]))
         self.model.evaluate(
             [dataset["input_ids"], dataset["attention_mask"], dataset["transformer_mask"]], 
-            [dataset["aspects"], dataset["polarities"]],
+            [aspect for aspect in dataset["aspects"]],
             verbose=1
         )
 

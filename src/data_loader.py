@@ -33,20 +33,14 @@ def load_data(args, data_type: str = "train"):
     df = pd.read_csv(os.path.join(args.data_dir, data_type + ".csv"))
 
     texts = []
-    aspects = []
-    polarities = []
+    aspects = [[] for _ in range(num_aspect)]
     for _, row in tqdm(df.iterrows(), desc=f"Loading {data_type} data...", total=len(df)):
         texts.append(row["text"])
-        aspects.append(np.zeros(num_aspect))
-        polarities.append(np.zeros(num_aspect * num_sentiment))
         for key in aspects_label.keys():
-            if row[key] != 0:
-                aspects[-1][aspects_label[key]] = 1
-                polarities[-1][aspects_label[key] * num_sentiment + row[key] - 1] = 1
+            aspects[aspects_label[key]].append(np.eye(num_sentiment)[int(row[key])])
 
     aspects = np.array(aspects)
-    polarities = np.array(polarities)
-    return texts, aspects, polarities
+    return texts, aspects
 
 
 def convert_lines_to_features(args, lines):
@@ -93,7 +87,7 @@ def load_samples(args, data_type):
         "dev",
         "test",
     ]:
-        lines, aspects, polarities = load_data(args, data_type)
+        lines, aspects = load_data(args, data_type)
     else:
         raise Exception("For mode {}, Only train, dev, test is available".format(data_type))
     input_ids, attention_mask, transformer_mask, corpus = convert_lines_to_features(args, lines)
@@ -103,7 +97,6 @@ def load_samples(args, data_type):
         "attention_mask": attention_mask,
         "transformer_mask": transformer_mask,
         "aspects": aspects,
-        "polarities": polarities,
         "corpus": corpus,
     }
 

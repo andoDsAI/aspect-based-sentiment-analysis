@@ -46,10 +46,11 @@ class AspectBasedModel:
             name="transformer_block",
         )
 
-        self.aspect_classifier = layers.Dense(num_aspects, activation="sigmoid", name="aspect")
-        self.polarity_classifier = layers.Dense(
-            num_aspects * num_polarities, activation="sigmoid", name="polarity"
-        )
+        self.aspect_classifiers = []
+        for i in range(num_aspects):
+            self.aspect_classifiers.append(
+                layers.Dense(num_polarities, activation="softmax", name=f"aspect_{i}")
+            )
 
         self.concat = layers.Concatenate(name="concatenate")
         self.dropout = layers.Dropout(args.dropout_rate, name="dropout")
@@ -77,11 +78,14 @@ class AspectBasedModel:
             ]
         )  # [batch_size, 4 * hidden_dim + embed_dim]
         x = self.dropout(x)
-        aspect = self.aspect_classifier(x)
-        polarity = self.polarity_classifier(x)
+        outputs = []
+        for aspect_classifier in self.aspect_classifiers:
+            aspect_output = aspect_classifier(x)
+            outputs.append(aspect_output)
+
         model = models.Model(
             inputs=[input_ids, attention_mask, transformer_mask],
-            outputs=[aspect, polarity],
+            outputs=outputs,
             name="aspect_based_model",
         )
         return model
